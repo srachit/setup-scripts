@@ -99,15 +99,16 @@ add_ros_repository() {
     echo "ROS 2 repository successfully added and system updated."
 }
 
-# Function to install ROS 2 Jazzy Base and build tools
+# Function to install ROS 2 Jazzy Base, build tools, and rosdep
 install_ros_packages() {
-    echo "--- Step 4: Installing ROS 2 packages and build tools ---"
+    echo "--- Step 4: Installing ROS 2 packages, build tools, and rosdep ---"
 
     declare -a required_packages=(
         "ros-${ROS_DISTRO}-ros-base"
         "python3-colcon-common-extensions"
         "python3-pip"
         "python3-vcstool"
+        "python3-rosdep"  # Added rosdep
         "ros-${ROS_DISTRO}-demo-nodes-cpp"
         "ros-${ROS_DISTRO}-demo-nodes-py"
     )
@@ -115,6 +116,13 @@ install_ros_packages() {
     # Use a single `apt-get` command for efficiency
     sudo apt-get install -y "${required_packages[@]}"
     echo "ROS 2 packages installed successfully."
+
+    # Install and initialize rosdep
+    echo "--- Initializing and updating rosdep ---"
+    # This command may fail if it has been run before, but that is expected and safe to ignore.
+    sudo rosdep init || true
+    rosdep update
+    echo "rosdep initialized and updated."
 }
 
 # Function to set up the environment
