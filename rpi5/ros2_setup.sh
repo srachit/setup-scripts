@@ -1,143 +1,146 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # ==============================================================================
 # This script automates the installation of ROS 2 Jazzy on a Raspberry Pi
 # running Ubuntu Server 24.04 (Noble Numbat).
 #
-# It includes checks to make the script idempotent and resumable.
+# The script is idempotent and can be run multiple times without causing
+# errors or unwanted changes.
 # ==============================================================================
 
-set -e # Exit immediately if a command exits with a non-zero status.
+# Exit immediately if a command exits with a non-zero status,
+# treat unset variables as an error, and exit if a command in a pipeline fails.
+set -euo pipefail
 
-echo "Starting ROS 2 Jazzy installation on Raspberry Pi..."
+# --- GLOBAL VARIABLES ---
+readonly ROS_DISTRO="jazzy"
+readonly ROS_SOURCE_LINE="source /opt/ros/$ROS_DISTRO/setup.bash"
+readonly ROS_BASHRC_FILE="$HOME/.bashrc"
+readonly LOG_FILE="./ros2_install.log"
 
-# Function to check for command success
-check_success() {
-  if [ $? -ne 0 ]; then
-    echo "ERROR: The last command failed. Exiting script."
-    exit 1
-  fi
+# --- MAIN EXECUTION ---
+main() {
+    # Redirect all output to a log file and stdout
+    exec > >(tee -a "$LOG_FILE") 2>&1
+
+    echo "Starting ROS 2 $ROS_DISTRO installation on Raspberry Pi..."
+    echo "---"
+
+    # --- Pre-installation checks ---
+    if [[ "$EUID" -eq 0 ]]; then
+        echo "ERROR: This script must not be run with sudo. Please run it as a normal user."
+        exit 1
+    fi
+
+    if ! grep -q "UBUNTU_CODENAME=noble" /etc/os-release; then
+        echo "ERROR: This script is for Ubuntu 24.04 (Noble Numbat). Aborting."
+        exit 1
+    fi
+
+    # --- Installation steps ---
+    update_system
+    setup_locales
+    add_ros_repository
+    install_ros_packages
+    setup_bashrc
+
+    echo "---"
+    echo "✅ ROS 2 $ROS_DISTRO installation completed successfully!"
+    echo "Please restart your shell or run 'source $ROS_BASHRC_FILE' to use ROS 2."
+    echo "A log of this installation can be found in '$LOG_FILE'."
 }
 
-# --- STEP 1: Update and Upgrade System ---
-echo "--- Step 1: Updating system packages ---"
-sudo apt update
-check_success
-sudo apt upgrade -y
-check_success
-sudo apt autoremove -y
-check_success
+# --- FUNCTIONS ---
 
-# --- STEP 2: Setup Locales ---
-echo "--- Step 2: Setting up locales ---"
-if locale | grep -q "LANG=en_US.UTF-8"; then
-    echo "Locales are already configured. Skipping."
-else
-    sudo apt install locales -y
-    check_success
-    sudo locale-gen en_US en_US.UTF-8
-    check_success
-    sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
-    check_success
-    export LANG=en_US.UTF-8
-fi
+# Function to update and upgrade the system
+update_system() {
+    echo "--- Step 1: Updating and upgrading system packages ---"
+    sudo apt-get update && sudo apt-get upgrade -y
+    sudo apt-get autoremove -y
+    echo "System packages updated."
+}
 
-# --- STEP 3: Add ROS 2 Repository ---
-echo "--- Step 3: Adding ROS 2 repository ---"
-if [ -f /etc/apt/sources.list.d/ros2.list ]; then
-    echo "ROS 2 repository is already configured. Skipping."
-else
-    sudo apt install software-properties-common -y
-    check_success
+# Function to set up locales
+setup_locales() {
+    echo "--- Step 2: Setting up locales ---"
+    if ! locale -a | grep -q 'en_US.utf8'; then
+        echo "Locales 'en_US.UTF-8' are not configured. Installing and setting now."
+        sudo apt-get install -y locales
+        sudo locale-gen en_US.UTF-8
+        sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+        export LANG=en_US.UTF-8
+        echo "Locales configured and set to 'en_US.UTF-8'."
+    else
+        echo "Locales 'en_US.UTF-8' are already configured. Skipping."
+    fi
+}
+
+# Function to add the ROS 2 repository
+add_ros_repository() {
+    echo "--- Step 3: Adding ROS 2 repository ---"
+    if [[ -f "/etc/apt/sources.list.d/ros2.list" ]]; then
+        echo "ROS 2 repository is already configured. Skipping."
+        return
+    fi
+
+    echo "Configuring ROS 2 repository..."
+    sudo apt-get install -y software-properties-common curl
     sudo add-apt-repository universe -y
-    check_success
-    sudo apt update && sudo apt install curl -y
-    check_success
-    sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
-    check_success
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-    check_success
-fi
 
-# --- STEP 4: Install ROS 2 Jazzy Base ---
-echo "--- Step 4: Installing ros-jazzy-ros-base ---"
-if dpkg -s ros-jazzy-ros-base &>/dev/null; then
-    echo "ROS 2 Jazzy ros-base is already installed. Skipping."
-else
-    sudo apt update
-    check_success
-    sudo apt install ros-jazzy-ros-base -y
-    check_success
-fi
+    # Download and add the GPG key
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | sudo tee /usr/share/keyrings/ros-archive-keyring.gpg > /dev/null
 
-# --- STEP 5: Install Build Tools and Demos ---
-echo "--- Step 5: Installing build tools and demo packages ---"
-# Check and install python3-colcon-common-extensions
-if dpkg -s python3-colcon-common-extensions &>/dev/null; then
-    echo "python3-colcon-common-extensions is already installed. Skipping."
-else
-    sudo apt install python3-colcon-common-extensions -y
-    check_success
-fi
+    # Add the repository to sources.list
+    local os_codename
+    os_codename=$(. /etc/os-release && echo "$UBUNTU_CODENAME")
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $os_codename main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
 
-# Check and install python3-pip
-if dpkg -s python3-pip &>/dev/null; then
-    echo "python3-pip is already installed. Skipping."
-else
-    sudo apt install python3-pip -y
-    check_success
-fi
+    sudo apt-get update
+    echo "ROS 2 repository successfully added and system updated."
+}
 
-# Check and install python3-vcstool
-if dpkg -s python3-vcstool &>/dev/null; then
-    echo "python3-vcstool is already installed. Skipping."
-else
-    sudo apt install python3-vcstool -y
-    check_success
-fi
+# Function to install ROS 2 Jazzy Base and build tools
+install_ros_packages() {
+    echo "--- Step 4: Installing ROS 2 packages and build tools ---"
 
-# Check and install demo nodes
-if dpkg -s ros-jazzy-demo-nodes-cpp ros-jazzy-demo-nodes-py &>/dev/null; then
-    echo "ROS 2 demo packages are already installed. Skipping."
-else
-    sudo apt install ros-jazzy-demo-nodes-cpp ros-jazzy-demo-nodes-py -y
-    check_success
-fi
+    declare -a required_packages=(
+        "ros-${ROS_DISTRO}-ros-base"
+        "python3-colcon-common-extensions"
+        "python3-pip"
+        "python3-vcstool"
+        "ros-${ROS_DISTRO}-demo-nodes-cpp"
+        "ros-${ROS_DISTRO}-demo-nodes-py"
+    )
 
-# --- STEP 6: Source ROS 2 Environment in .bashrc ---
-echo "--- Step 6: Setting up .bashrc to source ROS 2 automatically ---"
-LINE="source /opt/ros/jazzy/setup.bash"
-FILE=~/.bashrc
-if grep -qF -- "$LINE" "$FILE"; then
-    echo "ROS 2 sourcing line already exists in ~/.bashrc. Skipping."
-else
-    echo "$LINE" >> "$FILE"
-    echo "Added ROS 2 sourcing to ~/.bashrc"
-fi
-source "$FILE"
+    # Use a single `apt-get` command for efficiency
+    sudo apt-get install -y "${required_packages[@]}"
+    echo "ROS 2 packages installed successfully."
+}
 
-# --- STEP 7: Install and Initialize rosdep ---
-echo "--- Step 7: Installing and initializing rosdep ---"
-# Check if rosdep is already installed
-if dpkg -s python3-rosdep &>/dev/null; then
-    echo "rosdep is already installed. Skipping installation."
-else
-    sudo apt install python3-rosdep -y
-    check_success
-fi
+# Function to set up the environment
+setup_bashrc() {
+    echo "--- Step 5: Setting up .bashrc ---"
+    if grep -qF "$ROS_SOURCE_LINE" "$ROS_BASHRC_FILE"; then
+        echo "ROS 2 environment is already sourced in $ROS_BASHRC_FILE. Skipping."
+        return
+    fi
+    
+    echo "Sourcing ROS 2 environment in $ROS_BASHRC_FILE..."
+    
+    # Check if the file is writable by the current user
+    if [[ ! -w "$ROS_BASHRC_FILE" ]]; then
+        echo "ERROR: Cannot write to $ROS_BASHRC_FILE. Check file permissions."
+        exit 1
+    fi
+    
+    cat >> "$ROS_BASHRC_FILE" << EOF
 
-# Check if rosdep has been initialized
-if [ -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
-    echo "rosdep has already been initialized. Skipping."
-else
-    sudo rosdep init
-    check_success
-fi
+# Source ROS 2 $ROS_DISTRO environment
+$ROS_SOURCE_LINE
+EOF
+    
+    echo ".bashrc updated successfully."
+}
 
-rosdep update
-check_success
-
-echo "--- ROS 2 installation script finished. ---"
-echo "To test the installation, open a new terminal and run the talker and listener nodes:"
-echo "In one terminal: ros2 run demo_nodes_cpp talker"
-echo "In another terminal: ros2 run demo_nodes_py listener"
+# Call the main function
+main
